@@ -1,0 +1,48 @@
+/*
+  L298D Motor Driver – Variable Speed Control
+  Board   : Arduino Nano
+  Control : Serial input (0–100 %)
+*/
+
+const int ENA = 9;   // PWM pin
+const int IN1 = 7;
+const int IN2 = 8;
+
+int speedPercent = 0;
+
+void setup() {
+  pinMode(ENA, OUTPUT);
+  pinMode(IN1, OUTPUT);
+  pinMode(IN2, OUTPUT);
+
+  // Motor direction: forward
+  digitalWrite(IN1, HIGH);
+  digitalWrite(IN2, LOW);
+
+  Serial.begin(9600);
+  Serial.setTimeout(50);   // fast, stable input reading
+
+  Serial.println("=== L298D Motor Speed Control ===");
+  Serial.println("Enter speed (0–100) and press Enter:");
+}
+
+void loop() {
+  if (Serial.available()) {
+
+    int input = Serial.parseInt();   // read number
+
+    // Flush serial buffer
+    while (Serial.available()) Serial.read();
+
+    // Constrain input safely
+    speedPercent = constrain(input, 0, 100);
+
+    // Convert percent → PWM
+    int pwmValue = map(speedPercent, 0, 100, 0, 255);
+    analogWrite(ENA, pwmValue);
+
+    Serial.print("Motor Speed: ");
+    Serial.print(speedPercent);
+    Serial.println("%");
+  }
+}
