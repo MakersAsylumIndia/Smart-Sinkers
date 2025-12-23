@@ -1,0 +1,133 @@
+// ===== L298D MOTOR PINS =====
+const int ENA = 9;   // PWM
+const int IN1 = 7;
+const int IN2 = 8;
+
+// ===== 4x HC-SR04 PINS =====
+const int trigPins[4] = {2, 4, 10, 12};
+const int echoPins[4] = {3, 5, 11, 13};
+
+// ===== DISTANCE SETTINGS (HC-SR04) =====
+const int detectOnCm  = 30;  // becomes "present" at or below this
+const int detectOffCm = 35;  // becomes "not present" only above this (hysteresis)
+const int minCm = 6;         // closer than this can be noisy; clamp
+
+// ===== SPEED STEPS (sudden) =====
+const int baseSpeedByCount[5] = {
+  0,    // 0 sensors -> stop
+  110,  // 1 sensor
+  170,  // 2 sensors
+  225,  // 3 sensors
+  255   // 4 sensors -> always 100%
+};
+
+// Per-sensor presence memory (for hysteresis)
+bool present[4] = {false, false, false, false};
+
+void setup() {
+  Serial.begin(9600);
+
+  pinMode(ENA, OUTPUT);
+  pinMode(IN1, OUTPUT);
+  pinMode(IN2, OUTPUT);
+
+  // Forward direction
+  digitalWrite(IN1, HIGH);
+  digitalWrite(IN2, LOW);
+
+  for (int i = 0; i < 4; i++) {
+    pinMode(trigPins[i], OUTPUT);
+    pinMode(echoPins[i], INPUT);
+  }
+
+  Serial.println("HC-SR04 + L298D: count + distance control ready");
+}
+
+void loop() {
+  int detectedCount = 0;
+  long nearest = 9999;
+
+  for (int i = 0; i < 4; i++) {
+    // Read twice and take the smaller valid reading (more stable for HC-SR04)
+    long d1 = getDistanceCm(trigPins[i], echoPins[i]);
+    delay(5);
+    long d2 = getDistanceCm(trigPins[i], echoPins[i]);
+    long d = chooseBest(d1, d2);
+
+    // Update presence state with hysteresis
+    if (!present[i]) {
+      if (d > 0 && d <= detectOnCm) present[i] = true;
+    } else {
+      if (d <= 0 || d > detectOffCm) present[i] = false;
+    }
+
+    if (present[i]) {
+      detectedCount++;
+      if (d > 0 && d < nearest) nearest = d;
+    }
+  }
+
+  detectedCount = constrain(detectedCount, 0, 4);
+
+  int pwmOut = 0;
+
+  if (detectedCount == 0) {
+    pwmOut = 0; // stop
+  } else if (detectedCount == 4) {
+    pwmOut = 255; // keep original rule: all 4 -> 100%
+  } else {
+    int base = baseSpeedByCount[detectedCount];
+
+    // Distance scaling based on nearest detected object
+    // Closer => factor ~1.0, farther (towards detectOnCm) => factor ~0.30
+    nearest = constrain(nearest, minCm, detectOnCm);
+
+    float factor = mapFloat((float)nearest, (float)minCm, (float)detectOnCm, 1.0f, 0.30f);
+    pwmOut = (int)(base * factor);
+
+    // Ensure we never exceed base, and never go negative
+    pwmOut = constrain(pwmOut, 0, base);
+  }
+
+  analogWrite(ENA, pwmOut);
+
+  // Debug output
+  Serial.print("Count=");
+  Serial.print(detectedCount);
+  Serial.print(" Nearest=");
+  if (nearest == 9999) Serial.print("NA");
+  else Serial.print(nearest);
+  Serial.print("cm PWM=");
+  Serial.println(pwmOut);
+
+  delay(60); // fast + stable
+}
+
+// ---------- HC-SR04 distance (cm) ----------
+long getDistanceCm(int trigPin, int echoPin) {
+  digitalWrite(trigPin, LOW);
+  delayMicroseconds(2);
+  digitalWrite(trigPin, HIGH);
+  delayMicroseconds(10);
+  digitalWrite(trigPin, LOW);
+
+  // Timeout ~25ms => ~4m max
+  unsigned long duration = pulseIn(echoPin, HIGH, 25000);
+  if (duration == 0) return -1;
+
+  // speed of sound ~343 m/s => 0.0343 cm/us
+  return (long)(duration * 0.0343 / 2.0);
+}
+
+// Pick the smaller valid distance; if one is invalid, use the other
+long chooseBest(long a, long b) {
+  if (a <= 0 && b <= 0) return -1;
+  if (a <= 0) return b;
+  if (b <= 0) return a;
+  return (a < b) ? a : b;
+}
+
+// Float map helper
+float mapFloat(float x, float in_min, float in_max, float out_min, float out_max) {
+  return (x - in_min) * (out_max - out_min) / (in_max - in_min) + out_min;
+}
