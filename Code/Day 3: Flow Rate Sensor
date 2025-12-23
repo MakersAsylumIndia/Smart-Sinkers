@@ -1,0 +1,42 @@
+// Flow sensor connected to digital pin 3
+const byte flowPin = 3;
+
+volatile unsigned int pulseCount = 0;
+
+unsigned long lastMillis = 0;
+float flowRate = 0.0;      // L/min
+float totalVolume = 0.0;   // Litres
+
+void setup() {
+  Serial.begin(9600);
+  pinMode(flowPin, INPUT_PULLUP);
+  attachInterrupt(digitalPinToInterrupt(flowPin), countPulse, RISING);
+  Serial.println("Flow rate + volume measurement started");
+}
+
+void loop() {
+  unsigned long currentMillis = millis();
+
+  // Update every second
+  if (currentMillis - lastMillis >= 1000) {
+
+    // YF-S201: ~4.5 pulses per second per L/min
+    flowRate = pulseCount / 4.5;   // L/min
+
+    // Add volume for this 1-second interval
+    totalVolume += flowRate / 60.0; // Litres
+
+    Serial.print("Flow rate: ");
+    Serial.print(flowRate, 2);
+    Serial.print(" L/min | Total volume: ");
+    Serial.print(totalVolume, 3);
+    Serial.println(" L");
+
+    pulseCount = 0;
+    lastMillis = currentMillis;
+  }
+}
+
+void countPulse() {
+  pulseCount++;
+}
