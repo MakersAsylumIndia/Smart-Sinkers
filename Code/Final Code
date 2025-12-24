@@ -1,0 +1,155 @@
+// ===== L298D MOTOR PINS =====
+const int ENA = 9;   // PWM
+const int IN4 = 7;
+const int IN3 = 8;
+
+// ===== 4x HC-SR04 PINS =====
+const int trigPins[4] = {2, 4, 10, 12};
+const int echoPins[4] = {3, 5, 11, 13};
+
+// ===== DISTANCE SETTINGS (HC-SR04) =====
+const int detectOnCm  = 30;
+const int detectOffCm = 35;
+const int minCm = 6;
+
+// ===== SPEED STEPS =====
+const int baseSpeedByCount[5] = {
+  0, 110, 170, 225, 255
+};
+
+bool present[4] = {false, false, false, false};
+
+// ===== FLOW SENSOR =====
+const byte flowPin = 2;   // flow sensor signal connected to D2
+volatile unsigned int pulseCount = 0;
+unsigned long lastMillis = 0;
+float flowRate = 0.0;
+
+// ===== OLED DISPLAY =====
+#include "U8glib.h"
+U8GLIB_SSD1306_128X64 u8g(U8G_I2C_OPT_NONE);
+
+void setup() {
+  Serial.begin(9600);
+
+  // Motor setup
+  pinMode(ENA, OUTPUT);
+  pinMode(IN3, OUTPUT);
+  pinMode(IN4, OUTPUT);
+  digitalWrite(IN3, HIGH);
+  digitalWrite(IN4, LOW);
+
+  // Ultrasonic setup
+  for (int i = 0; i < 4; i++) {
+    pinMode(trigPins[i], OUTPUT);
+    pinMode(echoPins[i], INPUT);
+  }
+
+  // Flow sensor setup
+  pinMode(flowPin, INPUT_PULLUP);
+  attachInterrupt(digitalPinToInterrupt(flowPin), countPulse, RISING);
+
+  Serial.println("System ready: Motor + Sensors + OLED");
+}
+
+void loop() {
+  // ---------- HC-SR04 + Motor ----------
+  int detectedCount = 0;
+  long nearest = 9999;
+  int closeCount = 0; // count sensors detecting within 7 cm
+
+  for (int i = 0; i < 4; i++) {
+    long d1 = getDistanceCm(trigPins[i], echoPins[i]);
+    delay(5);
+    long d2 = getDistanceCm(trigPins[i], echoPins[i]);
+    long d = chooseBest(d1, d2);
+
+    if (!present[i]) {
+      if (d > 0 && d <= detectOnCm) present[i] = true;
+    } else {
+      if (d <= 0 || d > detectOffCm) present[i] = false;
+    }
+
+    if (present[i]) {
+      detectedCount++;
+      if (d > 0 && d < nearest) nearest = d;
+      if (d > 0 && d <= 7) closeCount++; // within 7 cm
+    }
+  }
+
+  detectedCount = constrain(detectedCount, 0, 4);
+  int pwmOut = 0;
+
+  if (detectedCount == 0) {
+    pwmOut = 0;
+  } else if (detectedCount == 4) {
+    pwmOut = 255;
+  } else {
+    int base = baseSpeedByCount[detectedCount];
+    nearest = constrain(nearest, minCm, detectOnCm);
+    float factor = mapFloat((float)nearest, (float)minCm, (float)detectOnCm, 1.0f, 0.30f);
+    pwmOut = (int)(base * factor);
+    pwmOut = constrain(pwmOut, 0, base);
+  }
+
+  // Override rule: if more than one sensor detects within 7 cm, boost speed
+  if (closeCount > 1) {
+    pwmOut = min(255, pwmOut + 50); // increase speed safely
+  }
+
+  analogWrite(ENA, pwmOut);
+
+  // ---------- Flow Sensor + OLED ----------
+  unsigned long currentMillis = millis();
+  if (currentMillis - lastMillis >= 1000) {   // update every 1 second
+    flowRate = (pulseCount / 4.5); // L/min
+    pulseCount = 0;
+    lastMillis = currentMillis;
+
+    Serial.print("Flow rate: ");
+    Serial.print(flowRate, 2);
+    Serial.println(" L/min");
+
+    // OLED update
+    u8g.firstPage();
+    do {
+      u8g.setFont(u8g_font_ncenB14);
+      u8g.drawStr(0, 20, "Flow:");
+      char buf[16];
+      dtostrf(flowRate, 4, 2, buf);   // convert float to string
+      u8g.drawStr(60, 20, buf);
+      u8g.drawStr(100, 20, "L/m");
+    } while (u8g.nextPage());
+  }
+
+  delay(60);
+}
+
+// ---------- HC-SR04 distance ----------
+long getDistanceCm(int trigPin, int echoPin) {
+  digitalWrite(trigPin, LOW);
+  delayMicroseconds(2);
+  digitalWrite(trigPin, HIGH);
+  delayMicroseconds(10);
+  digitalWrite(trigPin, LOW);
+
+  unsigned long duration = pulseIn(echoPin, HIGH, 25000);
+  if (duration == 0) return -1;
+  return (long)(duration * 0.0343 / 2.0);
+}
+
+long chooseBest(long a, long b) {
+  if (a <= 0 && b <= 0) return -1;
+  if (a <= 0) return b;
+  if (b <= 0) return a;
+  return (a < b) ? a : b;
+}
+
+float mapFloat(float x, float in_min, float in_max, float out_min, float out_max) {
+  return (x - in_min) * (out_max - out_min) / (in_max - in_min) + out_min;
+}
+
+// ---------- Flow sensor ISR ----------
+void countPulse() {
+  pulseCount++;
+}
